@@ -78,6 +78,34 @@ state. Longer requests raise a capacity error. Use
 `aac6fef/laya-multilingual-coreml` for the general-purpose 1024-token model.
 [Full API, model selection and offline usage](https://github.com/mizorewww/laya-coreml/blob/main/docs/USAGE.md).
 
+## Serve over HTTP
+
+Serve a local bundle over the Jev-compatible `POST /v1/systemone` protocol, so an
+existing Jev / laya client (or any OpenAI-style SDK pointed at the right base URL)
+talks to the on-device model with no code change.
+
+```bash
+pip install 'laya-coreml[serve]'
+laya-serve --model ./models/laya --host 127.0.0.1 --port 8000
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/systemone -H 'content-type: application/json' \
+  -d '{"state":"The customer asks for a refund of a duplicate payment.",
+       "questions":{"refund":{"type":"noul","instructions":"Does the customer request a refund?"}}}'
+```
+
+Endpoints: `POST /v1/systemone` (one forward pass — `{state, questions}` in,
+`{model, answers, usage}` out), `POST /v1/systemone/batch` (up to 64 decisions,
+one result or `{error}` per request, in order), and `GET /v1/models`. Interactive
+OpenAPI docs render at `/docs`. The model loads once at startup; forward passes
+run serially on a single Core ML instance.
+
+This serves one checkpoint per process. Capacity is unchanged from the Python API
+(512 tokens for the general model, batch 1, 32 option slots); over-capacity
+questions return HTTP 422. `--compute-units`, `--revision` and `--offline` mirror
+`laya-coreml predict`.
+
 ## Measured on M3 Max
 
 40-core GPU, 128 GiB, macOS 27.2. One 91-token question padded to 96, including

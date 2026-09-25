@@ -22,14 +22,16 @@ dependencies = ["coremltools>=9,<10", "numpy>=1.26,<2.2", "tokenizers>=0.21,<1",
 
 [project.optional-dependencies]
 convert = ["torch==2.7.0", "safetensors>=0.6"]
-dev = ["pytest>=8", "ruff>=0.12", "build>=1", "psutil>=6"]
+dev = ["pytest>=8", "ruff>=0.12", "build>=1", "psutil>=6", "httpx>=0.27"]
 compare = ["laya-mlx==0.2.0"]
 research = ["kmeans1d==0.4.0"]
 demo = ["rich>=15,<16", "Pillow>=12,<13"]
 publish = ["twine>=6,<7"]
+serve = ["fastapi>=0.115,<1", "uvicorn[standard]>=0.30"]
 
 [project.scripts]
 laya-coreml = "laya_coreml.cli:main"
+laya-serve = "laya_coreml.server:main"
 laya-coreml-snake = "laya_coreml.snake.cli:main"
 
 [project.urls]
