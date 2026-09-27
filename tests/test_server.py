@@ -185,6 +185,53 @@ def test_batch_enforces_max_sixty_four(client):
     assert r.status_code == 422
 
 
+# --- API key auth -------------------------------------------------------------
+
+def _noul_body(text="Yes?"):
+    return {"state": "x", "questions": {"q": {"type": "noul", "instructions": text}}}
+
+
+def test_open_server_needs_no_key(client):
+    assert client.post("/v1/systemone", json=_noul_body()).status_code == 200
+    assert client.get("/v1/models").status_code == 200
+
+
+def test_gated_server_rejects_missing_and_wrong_keys():
+    from fastapi.testclient import TestClient
+
+    gated = TestClient(server.create_app(FakeAgent(), api_key="secret"))
+    with gated:
+        r = gated.post("/v1/systemone", json=_noul_body())
+        assert r.status_code == 401
+        assert r.json()["error"]["code"] == "authentication_error"
+
+        r = gated.post(
+            "/v1/systemone", json=_noul_body(), headers={"Authorization": "Bearer wrong"}
+        )
+        assert r.status_code == 401
+
+        assert gated.get("/v1/models").status_code == 401
+
+
+def test_gated_server_accepts_bearer_key():
+    from fastapi.testclient import TestClient
+
+    gated = TestClient(server.create_app(FakeAgent(), api_key="secret"))
+    headers = {"Authorization": "Bearer secret"}
+    with gated:
+        assert gated.get("/v1/models", headers=headers).status_code == 200
+        r = gated.post("/v1/systemone", json=_noul_body(), headers=headers)
+        assert r.status_code == 200
+        assert r.json()["answers"]["q"]["type"] == "noul"
+
+        r = gated.post(
+            "/v1/systemone/batch",
+            json={"requests": [_noul_body("Yes?")]},
+            headers=headers,
+        )
+        assert r.status_code == 200
+        assert "answers" in r.json()["results"][0]
+
 # --- real model (Apple Silicon) --------------------------------------------
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Core ML runtime requires macOS")

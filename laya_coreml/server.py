@@ -16,12 +16,15 @@ pass, ``{"model", "answers", "usage"}`` out.
 from __future__ import annotations
 
 import argparse
+import os
+import secrets
 import threading
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from . import __version__
@@ -61,6 +64,10 @@ class ModelUnavailable(ServeError):
     status = 503
     code = "unavailable_error"
 
+
+class AuthenticationError(ServeError):
+    status = 401
+    code = "authentication_error"
 
 # --- Request models ---------------------------------------------------------
 # ``state`` may be text, a JSON object, or a list of conversation turns; the
@@ -120,13 +127,28 @@ def model_info(agent) -> dict:
 
 # --- App --------------------------------------------------------------------
 
-def create_app(agent) -> FastAPI:
+def create_app(agent, api_key: Optional[str] = None) -> FastAPI:
     """Build the FastAPI app around an already-loaded agent.
 
     A single lock serialises forward passes: Core ML's ``MLModel.predict`` is not
     guaranteed safe to call concurrently on one instance, and a local decision
     model pays nothing for that serialisation.
+
+    Pass ``api_key`` (or set ``LAYA_API_KEY``) to require
+    ``Authorization: Bearer <key>`` on every endpoint, including ``GET
+    /v1/models``. Omit it and the server stays open (localhost default).
     """
+
+    bearer = HTTPBearer(auto_error=False)
+
+    async def require_key(
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
+    ) -> None:
+        if api_key is None:
+            return
+        token = credentials.credentials if credentials is not None else None
+        if token is None or not secrets.compare_digest(token, api_key):
+            raise AuthenticationError("Invalid or missing API key.")
 
     info = model_info(agent)
     lock = threading.Lock()
@@ -136,7 +158,6 @@ def create_app(agent) -> FastAPI:
         description="Jev-compatible local serving for the Laya Core ML decision model.",
         version=__version__,
     )
-
     def envelope(result: dict) -> dict:
         return {
             "id": uuid.uuid4().hex,
@@ -166,11 +187,11 @@ def create_app(agent) -> FastAPI:
             status_code=exc.status, content={"error": {"code": exc.code, "message": str(exc)}}
         )
 
-    @app.post("/v1/systemone")
+    @app.post("/v1/systemone", dependencies=[Depends(require_key)])
     def systemone(req: DecisionRequest) -> dict:
         return run(req.state, req.questions)
 
-    @app.post("/v1/systemone/batch")
+    @app.post("/v1/systemone/batch", dependencies=[Depends(require_key)])
     def systemone_batch(req: BatchRequest) -> dict:
         # One result (or one {error}) per request, in order.
         results: list = []
@@ -187,7 +208,7 @@ def create_app(agent) -> FastAPI:
                 results.append({"error": {"code": "internal_error", "message": str(exc)}})
         return {"results": results}
 
-    @app.get("/v1/models")
+    @app.get("/v1/models", dependencies=[Depends(require_key)])
     def list_models() -> dict:
         return {"object": "list", "data": [info]}
 
@@ -225,6 +246,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Serve a range-shape export on CPU_AND_GPU despite the fidelity guard.",
     )
     parser.add_argument(
+        "--api-key",
+        default=None,
+        help="Require 'Authorization: Bearer <key>' on all endpoints. "
+        "Defaults to $LAYA_API_KEY when set; omit both to leave the server open.",
+    )
+    parser.add_argument(
         "--log-level",
         default="info",
         choices=["debug", "info", "warning", "error", "critical"],
@@ -245,12 +272,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         offline=args.offline,
         allow_unvalidated_gpu=args.allow_unvalidated_gpu,
     )
-    app = create_app(agent)
+    app = create_app(agent, api_key=args.api_key or os.environ.get("LAYA_API_KEY"))
     info = model_info(agent)
     print(
         f"laya-serve: serving {model!r} on http://{args.host}:{args.port}  ({info['id']})\n"
         f"  POST /v1/systemone | POST /v1/systemone/batch | GET /v1/models\n"
-        f"  OpenAPI docs: http://{args.host}:{args.port}/docs",
+        f"  OpenAPI docs: http://{args.host}:{args.port}/docs\n"
+        f"  auth: {'Bearer key required' if (args.api_key or os.environ.get('LAYA_API_KEY')) else 'open (no --api-key)'}",
         flush=True,
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
